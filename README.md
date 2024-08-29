@@ -1,7 +1,9 @@
 # Blackout Beacon
 
+## Description
 The tool scans IP addresses in local network for active websites. This tool was created to foster communication during periods where the Internet infrastructure either failed or was under controlled censorship. The script takes input from a file called ip_list.txt and generates an output file called active_ips.txt.
 
+## Structure
 Depending on how many IP addresses you enter in the **ip_list.txt** file will impact the time required for the script to generate the output file. In desperate times, you can simply keep it running while you are away. For those who are hosting, you can keep your device online for longer to ensure your IP address doesn’t change.
 
 - The **ip_list.txt** file counts each new line as a new entry.
