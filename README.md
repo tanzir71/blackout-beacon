@@ -1,17 +1,107 @@
-# Blackout Beacon
+# Blackout Beacon (Beacon v2.0 CLI)
 
-## Description
-The tool scans IP addresses in local network for active websites. This tool was created to foster communication during periods where the Internet infrastructure either failed or was under controlled censorship. The script takes input from a file called ip_list.txt and generates an output file called active_ips.txt.
+Blackout Beacon is a CLI-first toolkit for:
 
-## Structure
-Depending on how many IP addresses you enter in the **ip_list.txt** file will impact the time required for the script to generate the output file. In desperate times, you can simply keep it running while you are away. For those who are hosting, you can keep your device online for longer to ensure your IP address doesn’t change.
+- High-concurrency IP scanning (100+ threads)
+- HTTP(S) title probing (quickly identify web servers by page title)
+- Exporting results to JSON and CSV
+- Full LAN chat with UDP discovery + TCP peer-to-peer messaging
 
-- The **ip_list.txt** file counts each new line as a new entry.
-- You can define IP ranges with a hyphen like so: 192.168.0.0-192.168.255.255
-    - You can also define single IP addresses such as: 192.168.68.105
-    - Such a long-range can take forever to run. Hence, it’s better to make some educated guesses using the Command Prompt method I described above.
-- IP addresses that fall within this range are private (meaning, only available to users in your ISP’s network):
-    - 10.0.0.0 to 10.255.255.255
-    - 172.16.0.0 to 172.31.255.255
-    - 192.168.0.0 to 192.168.255.255
-- IP addresses outside the above range can be accessed nationwide, and they are likely static. Meaning, once you find a website with a static IP, that address is likely to work in the future as well, given the machine is online (i.e. turned on).
+This is designed for situations where Internet connectivity is unreliable, filtered, or intermittently down — but local networks (Wi‑Fi/LAN) and/or ISP-local routing may still work.
+
+## Requirements
+
+- Python 3.9+ (Windows tested)
+
+## Quick Start
+
+From this folder:
+
+```bash
+python blackout_beacon.py --help
+python blackout_beacon.py presets
+```
+
+## Optional GUI
+
+The CLI is the primary and most reliable interface. A minimal GUI is also available as a convenience layer.
+
+```bash
+python blackout_beacon.py gui
+```
+
+On Windows, you can also launch the GUI by double-clicking `blackout_beacon_gui.pyw`.
+
+## Scan
+
+Scan supports targets as:
+
+- Single IP: `192.168.68.105`
+- Range: `192.168.68.1-192.168.68.254`
+- CIDR: `192.168.68.0/24`
+- File input: `--file ip_list.txt` (one target per line)
+- Presets: `--preset bd:gp` (see `presets`)
+
+### Examples
+
+Scan a local /24, probe common web ports, and export JSON + CSV:
+
+```bash
+python blackout_beacon.py scan 192.168.68.0/24 --threads 200 --ping --http-title --json-out out.json --csv-out out.csv
+```
+
+Use `ip_list.txt` and output a simple list of “active” IPs (ping ok or any probed port open):
+
+```bash
+python blackout_beacon.py scan --file ip_list.txt --ports 80,443 --http-title --active-ips-out active_ips.txt
+```
+
+Scan a Bangladesh ISP preset:
+
+```bash
+python blackout_beacon.py scan --preset bd:gp --threads 300 --ports 80,443 --http-title --max-targets 200000
+```
+
+### Output
+
+- Console: prints one line per “interesting” host by default (ping ok, open ports, or `--show-all`)
+- JSON: array of results with fields: `ip`, `ts`, `ping_ok`, `ping_ms`, `open_ports`, `http[]`, `error`
+- CSV: one row per IP (or one per HTTP probe if multiple titles are fetched)
+
+## Presets (BD ISP)
+
+List presets:
+
+```bash
+python blackout_beacon.py presets
+```
+
+Available preset keys:
+
+- `bd:gp` (Grameenphone)
+- `bd:robi` (Robi / Airtel)
+- `bd:banglalink` (Banglalink)
+- `bd:teletalk` (Teletalk)
+- `bd:btcl` (BTCL)
+- `bd:all` (union)
+
+These presets are intentionally conservative and are meant as a starting point. Large CIDRs can expand to many hosts, so scanning them usually requires increasing `--max-targets` and/or narrowing the scope.
+
+## LAN Chat (UDP discovery + TCP P2P)
+
+Start chat on multiple devices on the same LAN:
+
+```bash
+python blackout_beacon.py chat --name Alice
+python blackout_beacon.py chat --name Bob
+```
+
+Discovery is via UDP broadcast (default UDP port `50504`). Messaging is via TCP (default TCP port `50505`).
+
+Chat commands:
+
+- `/peers` list discovered peers
+- `/all <msg>` send message to connected peers
+- `/quit` exit
+
+If your firewall blocks discovery or connections, allow inbound UDP `50504` and TCP `50505` (or change ports with `--udp-port` / `--tcp-port`).
