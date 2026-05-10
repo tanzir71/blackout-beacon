@@ -1032,6 +1032,7 @@ def run_gui(_: argparse.Namespace) -> int:
             self._scan_running = False
             self._selected_files: List[str] = []
             self._hotkeys_bound = False
+            self._stop_event: Optional[threading.Event] = None
 
         def build(self, parent: "ttk.Frame") -> None:
             frm = parent
@@ -1181,7 +1182,7 @@ def run_gui(_: argparse.Namespace) -> int:
 
             def worker() -> None:
                 stop = threading.Event()
-                self._scan_q.put(("__stop_event__", stop))
+                self._stop_event = stop
                 try:
                     raw_targets = self.targets_text.get("1.0", "end").splitlines()
                     tokens = [t.strip() for t in raw_targets if t.strip() and not t.strip().startswith("#")]
@@ -1201,33 +1202,42 @@ def run_gui(_: argparse.Namespace) -> int:
                         ports = [80, 443]
 
                     threads = int(self.threads_var.get() or 200)
+                    if threads < 1:
+                        threads = 1
+                    if threads > 1000:
+                        threads = 1000
                     do_ping = bool(self.ping_var.get())
 
                     results: List[ScanResult] = []
                     active_ips: List[str] = []
-                    with ThreadPoolExecutor(max_workers=threads) as ex:
-                        futs = {
-                            ex.submit(
-                                scan_one,
-                                ip,
-                                do_ping=do_ping,
-                                ping_timeout_s=1.0,
-                                ports=ports,
-                                tcp_timeout_s=0.6,
-                                http_title=http_title,
-                                http_timeout_s=1.2,
-                            ): ip
-                            for ip in targets
-                        }
-                        done = 0
-                        total = len(futs)
-                        for fut in as_completed(futs):
-                            if stop.is_set():
-                                break
+                    results_lock = threading.Lock()
+                    active_lock = threading.Lock()
+                    total = len(targets)
+                    target_q: "queue.Queue[str]" = queue.Queue()
+                    for ip in targets:
+                        target_q.put(ip)
+
+                    done = 0
+                    done_lock = threading.Lock()
+
+                    def scan_worker() -> None:
+                        nonlocal done
+                        while not stop.is_set():
                             try:
-                                res = fut.result()
+                                ip = target_q.get_nowait()
+                            except queue.Empty:
+                                return
+                            try:
+                                res = scan_one(
+                                    ip,
+                                    do_ping=do_ping,
+                                    ping_timeout_s=1.0,
+                                    ports=ports,
+                                    tcp_timeout_s=0.6,
+                                    http_title=http_title,
+                                    http_timeout_s=1.2,
+                                )
                             except Exception as e:
-                                ip = futs[fut]
                                 res = ScanResult(
                                     ip=ip,
                                     ts=_now_iso(),
@@ -1237,11 +1247,30 @@ def run_gui(_: argparse.Namespace) -> int:
                                     http=[],
                                     error=str(e),
                                 )
-                            results.append(res)
+
+                            with done_lock:
+                                done += 1
+                                local_done = done
+                            with results_lock:
+                                results.append(res)
                             if (res.ping_ok is True) or res.open_ports:
-                                active_ips.append(res.ip)
-                            done += 1
-                            self._scan_q.put(("__progress__", done, total, res))
+                                with active_lock:
+                                    active_ips.append(res.ip)
+                            self._scan_q.put(("__progress__", local_done, total, res))
+
+                    workers: List[threading.Thread] = []
+                    for _ in range(min(threads, total)):
+                        t = threading.Thread(target=scan_worker, daemon=True)
+                        t.start()
+                        workers.append(t)
+
+                    for t in workers:
+                        while t.is_alive():
+                            if stop.is_set():
+                                break
+                            t.join(timeout=0.1)
+
+                    stopped_early = stop.is_set()
 
                     results.sort(key=lambda r: ipaddress.ip_address(r.ip))
                     _write_scan_outputs(
@@ -1251,7 +1280,10 @@ def run_gui(_: argparse.Namespace) -> int:
                         csv_out=self.csv_out_var.get().strip() or None,
                         active_ips_out=self.active_out_var.get().strip() or None,
                     )
-                    self._scan_q.put(("__done__", len(results), len(set(active_ips))))
+                    if stopped_early:
+                        self._scan_q.put(("__stopped__", len(results), len(set(active_ips))))
+                    else:
+                        self._scan_q.put(("__done__", len(results), len(set(active_ips))))
                 finally:
                     self._scan_q.put(("__finish__",))
 
@@ -1266,9 +1298,7 @@ def run_gui(_: argparse.Namespace) -> int:
                     if not msg:
                         continue
                     tag = msg[0]
-                    if tag == "__stop_event__":
-                        self._stop_event = msg[1]
-                    elif tag == "__progress__":
+                    if tag == "__progress__":
                         done, total, res = msg[1], msg[2], msg[3]
                         self.status_var.set(f"{done}/{total}")
                         self._append_out(_format_scan_line(res))
@@ -1276,6 +1306,8 @@ def run_gui(_: argparse.Namespace) -> int:
                         messagebox.showerror("Scan", str(msg[1]))
                     elif tag == "__done__":
                         self.status_var.set(f"done ({msg[1]} results, {msg[2]} active)")
+                    elif tag == "__stopped__":
+                        self.status_var.set(f"stopped ({msg[1]} results, {msg[2]} active)")
                     elif tag == "__finish__":
                         self._scan_running = False
                         self.run_btn.configure(state="normal")
@@ -1286,12 +1318,13 @@ def run_gui(_: argparse.Namespace) -> int:
             self.root.after(120, self._poll_scan_queue)
 
         def stop_scan(self) -> None:
-            if self._scan_running and hasattr(self, "_stop_event"):
+            if self._scan_running and self._stop_event is not None:
                 try:
                     self._stop_event.set()
                 except Exception:
                     pass
                 self.status_var.set("stopping…")
+                self.stop_btn.configure(state="disabled")
 
     class GuiPresets:
         def __init__(self, root: "tk.Tk", apply_to_scan: "callable") -> None:
